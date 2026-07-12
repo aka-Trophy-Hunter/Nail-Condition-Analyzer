@@ -3,14 +3,55 @@ import subprocess
 import shutil
 import sys
 import tempfile
+import requests
 from pathlib import Path
 
 import streamlit as st
+import torch
+import torch.nn as nn
+from torchvision import transforms
+from torchvision.models import resnet152
 from PIL import Image
 
 REPO_ROOT = Path(__file__).parent
 YOLO_DIR = REPO_ROOT / "yolov5"
 WEIGHTS_PATH = REPO_ROOT / "models" / "best.pt"
+
+CLASSIFIER_URL = "https://huggingface.co/moneebaa/nailscan-resnet152/resolve/main/resnet152_nail.pt"
+CLASSIFIER_PATH = REPO_ROOT / "models" / "resnet152_nail.pt"
+CLASS_NAMES = ["Acral Lentiginous Melanoma", "Healthy Nail", "Onychogryphosis", "Blue Finger", "Clubbing", "Pitting"]
+
+CLASSIFY_TRANSFORM = transforms.Compose([
+    transforms.Resize((256, 256)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
+
+
+@st.cache_resource
+def load_classifier():
+    if not CLASSIFIER_PATH.exists():
+        CLASSIFIER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with requests.get(CLASSIFIER_URL, stream=True) as r:
+            r.raise_for_status()
+            with open(CLASSIFIER_PATH, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+    model = resnet152(weights=None)
+    model.fc = nn.Linear(model.fc.in_features, len(CLASS_NAMES))
+    model.load_state_dict(torch.load(CLASSIFIER_PATH, map_location="cpu"))
+    model.eval()
+    return model
+
+
+def classify_nail(image: Image.Image, model):
+    tensor = CLASSIFY_TRANSFORM(image).unsqueeze(0)
+    with torch.no_grad():
+        output = model(tensor)
+        probs = torch.softmax(output, dim=1)[0]
+    top_idx = int(torch.argmax(probs))
+    return CLASS_NAMES[top_idx], float(probs[top_idx]) * 100
 
 
 @st.cache_resource
@@ -53,8 +94,9 @@ def run_segmentation(image_path: str, out_dir: str):
 st.title("NailScan")
 st.caption("Stage 1: nail detection & segmentation. Disease classification is coming soon.")
 
-with st.spinner("Setting up model..."):
+with st.spinner("Setting up models..."):
     setup_yolov5()
+    classifier_model = load_classifier()
 
 file = st.file_uploader("Upload a photo of your nail(s)", type=["jpg", "jpeg", "png"])
 
@@ -82,7 +124,12 @@ else:
         else:
             st.warning("No nail detected in this image. Try a clearer, closer photo.")
 
+    with st.spinner("Analyzing nail condition..."):
+        predicted_class, confidence = classify_nail(image, classifier_model)
+
+    st.subheader(f"Prediction: {predicted_class}")
+    st.write(f"Confidence: {confidence:.1f}%")
     st.caption(
-        "Disease classification (onychomycosis, dystrophy, onycholysis, melanonychia, etc.) "
-        "will be added once the classifier model is available."
+        "This is an automated screening tool trained on a public dataset, not a medical diagnosis. "
+        "Please consult a dermatologist for confirmation."
     )
