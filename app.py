@@ -106,7 +106,6 @@ def run_segmentation(image_path: str, out_dir: str):
 
 st.image("22222.jpg", use_column_width=True)
 st.title("NailScan")
-st.caption("Stage 1: nail detection & segmentation. Disease classification is coming soon.")
 
 with st.spinner("Setting up models..."):
     setup_yolov5()
